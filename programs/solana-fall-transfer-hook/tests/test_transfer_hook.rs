@@ -76,3 +76,74 @@ fn test_transfer_hook_rate_limit_exceeded() {
     let res = svm.send_transaction(tx);
     assert!(res.is_err(), "Transfer exceeding rate limit should fail");
 }
+
+
+#[test]
+fn test_rate_limit_is_per_user() {
+    let (mut svm, payer, program_id) = setup();
+    let second_wallet = Keypair::new();
+    svm.airdrop(&second_wallet.pubkey(), 1_000_000_000).unwrap();
+
+    let mint = Keypair::new();
+    setup_mint_and_extra_metas(&mut svm, &payer, &mint, &program_id);
+
+    helpers::initialize_rate_limit(&mut svm, &second_wallet, &mint, &program_id);
+
+    let payer_ata = create_ata(&mut svm, &payer, &payer.pubkey(), &mint.pubkey());
+    let second_wallet_ata = create_ata(
+        &mut svm,
+        &payer,
+        &second_wallet.pubkey(),
+        &mint.pubkey(),
+    );
+    mint_tokens(&mut svm, &payer, &mint.pubkey(), &payer_ata, 1_000_000);
+    mint_tokens(
+        &mut svm,
+        &payer,
+        &mint.pubkey(),
+        &second_wallet_ata,
+        1_000_000,
+    );
+
+    let payer_transfer = build_transfer_with_hook_ix(
+        &payer_ata,
+        &second_wallet_ata,
+        &mint.pubkey(),
+        &payer.pubkey(),
+        &program_id,
+        1_000_000,
+        9,
+    );
+    let blockhash = svm.latest_blockhash();
+    let msg = Message::new_with_blockhash(&[payer_transfer], Some(&payer.pubkey()), &blockhash);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&payer]).unwrap();
+    let result = svm.send_transaction(tx);
+    assert!(result.is_ok(), "First wallet transfer failed: {:?}", result.err());
+
+    let second_wallet_transfer = build_transfer_with_hook_ix(
+        &second_wallet_ata,
+        &payer_ata,
+        &mint.pubkey(),
+        &second_wallet.pubkey(),
+        &program_id,
+        1_000_000,
+        9,
+    );
+    let blockhash = svm.latest_blockhash();
+    let msg = Message::new_with_blockhash(
+        &[second_wallet_transfer],
+        Some(&second_wallet.pubkey()),
+        &blockhash,
+    );
+    let tx = VersionedTransaction::try_new(
+        VersionedMessage::Legacy(msg),
+        &[&second_wallet],
+    )
+    .unwrap();
+    let result = svm.send_transaction(tx);
+    assert!(
+        result.is_ok(),
+        "Second wallet transfer failed: {:?}",
+        result.err()
+    );
+}
